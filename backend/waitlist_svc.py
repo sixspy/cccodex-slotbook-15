@@ -76,9 +76,12 @@ def promote_wait(body: PromoteIn, authorization: AuthHeader = None):
 
             expire = (datetime.now() + timedelta(minutes=30)).isoformat(timespec="seconds")
             cur = conn.execute(
-                """INSERT INTO holds(slot_id,party_key,seats,status,expire_at,created_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (slot["id"], wrow["party_key"], wrow["seats"], "占位中", expire, now),
+                """INSERT INTO holds(slot_id,party_key,seats,status,expire_at,created_at,hold_gen)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (
+                    slot["id"], wrow["party_key"], wrow["seats"], "占位中", expire, now,
+                    slot["generation"],
+                ),
             )
             conn.execute(
                 "UPDATE waitlist SET status='已晋升' WHERE id=?", (body.wait_id,)

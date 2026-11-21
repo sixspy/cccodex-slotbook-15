@@ -1,4 +1,4 @@
-"""确认入册：占位 → 正式预订，写快照 generation。"""
+"""确认入册：占位 → 正式预订；比对占位代数与档期现代数，跨代拒确认（甲路径）。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -39,7 +39,11 @@ def confirm_hold(body: ConfirmIn, authorization: AuthHeader = None):
         if not slot:
             raise HTTPException(404, "档期不存在")
         lock_key = f"slot:{slot['code']}"
-        require_lock(conn, lock_key, user)
+        try:
+            require_lock(conn, lock_key, user)
+        except HTTPException:
+            conn.commit()  # 后到只记争用：争用落账，业务零写
+            raise
         try:
             hold = conn.execute("SELECT * FROM holds WHERE id=?", (body.hold_id,)).fetchone()
             if hold["status"] != "占位中":
@@ -51,6 +55,38 @@ def confirm_hold(body: ConfirmIn, authorization: AuthHeader = None):
                 write_audit(conn, user, "hold_expire", str(hold["id"]), {})
                 conn.commit()
                 raise HTTPException(409, "占位已过期")
+            # 代数拒确认册·甲路径：占位代数≠档期现代数 → 正式零增整笔回滚
+            if int(hold["hold_gen"]) != int(slot["generation"]):
+                write_audit(
+                    conn,
+                    user,
+                    "confirm_reject_gen",
+                    hold["party_key"],
+                    {
+                        "hold_id": hold["id"],
+                        "slot": slot["code"],
+                        "hold_gen": hold["hold_gen"],
+                        "slot_gen": slot["generation"],
+                        "seats": hold["seats"],
+                        "register": "甲路径-代数比对整笔回滚",
+                    },
+                )
+                conn.commit()  # 拒写（记偏）与业务零写同账同败
+                raise HTTPException(
+                    409,
+                    detail={
+                        "error": "gen_mismatch",
+                        "message": (
+                            f"代数不一致拒确认：占位代数{hold['hold_gen']}"
+                            f"≠档期现代数{slot['generation']}，正式零增整笔回滚"
+                        ),
+                        "hold_id": hold["id"],
+                        "hold_gen": hold["hold_gen"],
+                        "slot_gen": slot["generation"],
+                        "slot": slot["code"],
+                        "register": "甲路径",
+                    },
+                )
             remain = int(slot["capacity"]) - int(slot["booked"])
             if hold["seats"] > remain:
                 raise HTTPException(409, "确认时容量不足，请释放或改候补")

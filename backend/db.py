@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS holds(
   status TEXT NOT NULL,
   expire_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  hold_gen INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY(slot_id) REFERENCES slots(id)
 );
 CREATE TABLE IF NOT EXISTS bookings(
@@ -177,12 +178,12 @@ def seed_if_empty(conn) -> None:
             ),
         )
     for h in holds:
-        slot = conn.execute("SELECT id FROM slots WHERE code=?", (h["slot_code"],)).fetchone()
+        slot = conn.execute("SELECT id,generation FROM slots WHERE code=?", (h["slot_code"],)).fetchone()
         if not slot:
             continue
         conn.execute(
-            """INSERT INTO holds(slot_id,party_key,seats,status,expire_at,created_at)
-               VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO holds(slot_id,party_key,seats,status,expire_at,created_at,hold_gen)
+               VALUES (?,?,?,?,?,?,?)""",
             (
                 slot["id"],
                 h["party_key"],
@@ -190,6 +191,7 @@ def seed_if_empty(conn) -> None:
                 h["status"],
                 h["expire_at"],
                 h["created_at"],
+                h.get("hold_gen", slot["generation"]),
             ),
         )
     # 一笔已确认正式册，便于对账种子
@@ -210,9 +212,17 @@ def seed_if_empty(conn) -> None:
     write_audit(conn, "system", "seed", "slots", {"count": len(slots)})
 
 
+def _migrate(conn) -> None:
+    """存量库迁移：holds 补占位代数列（既有占位默认代 1，与库内档期同代）。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(holds)")}
+    if "hold_gen" not in cols:
+        conn.execute("ALTER TABLE holds ADD COLUMN hold_gen INTEGER NOT NULL DEFAULT 1")
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         ensure_users(conn)
         seed_if_empty(conn)
         conn.commit()
